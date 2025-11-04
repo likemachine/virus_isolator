@@ -1,5 +1,12 @@
 import sys
 from collections import deque, defaultdict
+from functools import lru_cache
+
+
+def canonical_edge(u: str, v: str) -> tuple[str, str]:
+    """Каноническое представление неориентированного ребра."""
+    a, b = sorted((u, v))
+    return a, b
 
 def is_gateway(node: str) -> bool:
     return node.isupper()
@@ -38,7 +45,7 @@ def bfs_from_gateway(gw: str, graph):
 def choose_target_gateway(cur: str, graph):
     """Выбрать ближайший шлюз (ties: лексикографически). Вернуть (gw, dist_to_gw) или (None, None)."""
     dist_from_cur = bfs(cur, graph)
-    reachable_gws = [(d, gw) for gw in graph.keys() if is_gateway(gw) and gw in dist_from_cur]
+    reachable_gws = [(dist_from_cur[gw], gw) for gw in graph.keys() if is_gateway(gw) and gw in dist_from_cur]
     if not reachable_gws:
         return None, None
     reachable_gws.sort()  # по (длина, имя шлюза) — как и нужно
@@ -60,35 +67,6 @@ def lexicographic_next_step_towards(cur: str, target_gw: str, graph):
     candidates.sort()
     return candidates[0]
 
-def compute_cut_edge(cur: str, target_gw: str, graph):
-    """Определить ребро 'Шлюз-узел' на лексикографически минимальном кратчайшем пути от cur к target_gw."""
-    dist_to_gw = bfs_from_gateway(target_gw, graph)
-    if cur not in dist_to_gw:
-        return None
-    d = dist_to_gw[cur]
-    # Если вирус уже рядом (d == 1), отключаем target_gw-cur
-    # Иначе пройдём вперёд по пути вируса до узла на расстоянии 1 от шлюза.
-    node = cur
-    while dist_to_gw[node] > 1:
-        # выбираем лексикографически минимального соседа, уменьшающего расстояние к шлюзу
-        next_nodes = [v for v in graph[node] if v in dist_to_gw and dist_to_gw[v] == dist_to_gw[node] - 1]
-        next_nodes.sort()
-        node = next_nodes[0]
-    # node — последний узел перед шлюзом; отключаем target_gw-node
-    u = node
-    v = target_gw
-    # Формат "ШЛЮЗ-узел" (слева всегда шлюз)
-    return f"{v}-{u}"
-
-def cut_edge_in_graph(graph, cut: str):
-    """Удалить ребро из графа (двунаправленное). Формат 'A-b' (A — шлюз)."""
-    left, _, right = cut.partition('-')
-    u, v = left, right
-    if v in graph[u]:
-        graph[u].remove(v)
-    if u in graph[v]:
-        graph[v].remove(u)
-
 def virus_move(cur: str, graph):
     """Смоделировать ход вируса по правилам. Возвращает новый узел или cur, если путей нет."""
     gw, _ = choose_target_gateway(cur, graph)
@@ -107,34 +85,55 @@ def solve(edges: list[tuple[str, str]]) -> list[str]:
     Returns:
         список отключаемых коридоров в формате "Шлюз-узел"
     """
-    graph = build_graph(edges)
-    cur = 'a'  # старт вируса
+    initial_edges = tuple(sorted(canonical_edge(u, v) for u, v in edges))
 
-    result = []
+    @lru_cache(maxsize=None)
+    def dfs(cur: str, edges_key: tuple[tuple[str, str], ...]):
+        graph = build_graph(edges_key)
+        target_gw, _ = choose_target_gateway(cur, graph)
+        if target_gw is None:
+            return ()
 
-    # Пока существует путь от вируса к какому-либо шлюзу — продолжаем.
-    while True:
-        gw, _ = choose_target_gateway(cur, graph)
-        if gw is None:
-            break  # вирус изолирован, путей к шлюзам нет
+        available_cuts = []
+        for node in graph:
+            if not is_gateway(node):
+                continue
+            for nb in graph[node]:
+                if is_gateway(nb):
+                    continue
+                available_cuts.append(f"{node}-{nb}")
+        available_cuts = sorted(set(available_cuts))
 
-        # Выбираем и отключаем корректное в лексикографическом смысле ребро "Шлюз-узел"
-        cut = compute_cut_edge(cur, gw, graph)
-        # Теоретически, если по каким-то причинам пути нет — останавливаемся
-        if cut is None:
-            break
+        edges_set = set(edges_key)
+        for cut in available_cuts:
+            gw, _, regular = cut.partition('-')
+            edge_repr = canonical_edge(gw, regular)
+            if edge_repr not in edges_set:
+                continue
 
-        result.append(cut)
-        cut_edge_in_graph(graph, cut)
+            new_edges = list(edges_key)
+            new_edges.remove(edge_repr)
+            new_edges_key = tuple(sorted(new_edges))
+            new_graph = build_graph(new_edges_key)
 
-        # Ход вируса
-        new_cur = virus_move(cur, graph)
-        # Если после отключения путей нет — вирус никуда не идёт (изолирован)
-        if new_cur == cur and choose_target_gateway(cur, graph)[0] is None:
-            break
-        cur = new_cur
+            new_target, _ = choose_target_gateway(cur, new_graph)
+            if new_target is None:
+                return (cut,)
 
-    return result
+            next_pos = virus_move(cur, new_graph)
+            if next_pos is None:
+                next_pos = cur
+            if is_gateway(next_pos):
+                continue  # вирус попал в шлюз — неправильный сценарий
+
+            suffix = dfs(next_pos, new_edges_key)
+            if suffix is not None:
+                return (cut,) + suffix
+
+        return None
+
+    result = dfs('a', initial_edges)
+    return list(result or [])
 
 
 def main():
