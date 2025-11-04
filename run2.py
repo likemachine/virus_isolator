@@ -30,7 +30,7 @@ def bfs_from_one(start, g):
     return dist
 
 def solve(edges: list[tuple[str, str]]) -> list[str]:
-    # граф
+    # строим граф
     g: dict[str, set[str]] = defaultdict(set)
     for u, v in edges:
         g[u].add(v)
@@ -44,58 +44,80 @@ def solve(edges: list[tuple[str, str]]) -> list[str]:
     gateways = sorted([v for v in g if is_gateway(v)])
     if not gateways:
         return []
-    
-    # если вирус = шлюз
+
+    # старт — минимальный НЕ-шлюзовой узел; если все — шлюзы, возвращаем пусто
     non_gate = [v for v in g if not is_gateway(v)]
     if non_gate:
         virus = min(non_gate)
     else:
-        return []  # все узлы — шлюзы, нечего заражать
-
-    result: list[str] = []
-
-    # старт вируса — лексикографически минимальный строчный узел
-    virus_candidates = [v for v in g if v and v[0].islower()]
-    virus = min(virus_candidates) if virus_candidates else min(g.keys())
+        return []
 
     result: list[str] = []
 
     while True:
-        # расстояния от вируса
+        # расстояния от вируса и от любых шлюзов
         dist_v = bfs_from_one(virus, g)
+        dist_any = bfs_from_many(gateways, g)
 
-        # ближайшая длина к какому-либо шлюзу
+        # ближайшая длина до какого-либо шлюза
         reachable = [(dist_v.get(G, INF), G) for G in gateways]
         reachable.sort()
         best_len = reachable[0][0]
         if best_len >= INF:
             break  # пути к шлюзам нет
 
-        cut_candidates = []
-        for dG, G in reachable:
-            if dG != best_len:
+        # если вирус соседствует со шлюзом — режем это ребро (формат G-virus)
+        if best_len == 1:
+            cut_candidates = [f"{G}-{virus}" for G in g[virus] if is_gateway(G)]
+            # не пусто по определению, берем лексикографически минимальное
+            cut = min(cut_candidates)
+            G, _, p = cut.partition('-')
+            if p in g[G]: g[G].remove(p)
+            if G in g[p]: g[p].remove(G)
+            result.append(cut)
+        else:
+            # Соберём ВСЕ допустимые разрывы вида "G-p" которые лежат на кратчайшей дистанции best_len
+            cut_candidates = []
+            for dG, G in reachable:
+                if dG != best_len:
+                    break
+                for p in g[G]:
+                    if dist_v.get(p, INF) == dG - 1:
+                        # допустимый разрыв: G-p
+                        cut_candidates.append((G, p))
+
+            # safety: если вдруг пусто — выходим
+            if not cut_candidates:
                 break
-            for p in g[G]:
-                if dist_v.get(p, INF) == dG - 1:
-                    cut_candidates.append(f"{G}-{p}")
 
-        cut = min(cut_candidates)
-        G, _, p = cut.partition('-')
+            # Для каждого кандидата вычисляем, сколько у p соседей-шлюзов осталось
+            # (эта метрика показывает, насколько опасен узел p)
+            enriched = []
+            for G, p in cut_candidates:
+                gw_deg = sum(1 for nb in g[p] if is_gateway(nb))
+                cut_str = f"{G}-{p}"
+                # хотим выбирать сначала по максимальному gw_deg, затем по лексикографическому cut_str
+                enriched.append(( -gw_deg, cut_str, G, p ))  # минус — потому что min/select по ключом
+            # выбираем лучший: минимальный кортеж => максимальный gw_deg и минимальный лексикографически cut_str
+            enriched.sort()
+            _, cut_str, G, p = enriched[0]
 
-        if p in g[G]:
-            g[G].remove(p)
-        if G in g[p]:
-            g[p].remove(G)
-        result.append(cut)
+            # разрезаем
+            if p in g[G]: g[G].remove(p)
+            if G in g[p]: g[p].remove(G)
+            result.append(cut_str)
 
-        dist_any = bfs_from_many(gateways, g)
-        if dist_any.get(virus, INF) >= INF:
+        # проверяем достижимость вируса от шлюзов после разреза
+        dist_any_after = bfs_from_many(gateways, g)
+        if dist_any_after.get(virus, INF) >= INF:
             break
 
-        next_steps = [nb for nb in g[virus] if dist_any.get(nb, INF) < dist_any.get(virus, INF)]
+        # шаг вируса к ближайшему шлюзу (если возможен)
+        next_steps = [nb for nb in g[virus] if dist_any_after.get(nb, INF) < dist_any_after.get(virus, INF)]
         if next_steps:
             virus = min(next_steps)
         else:
+            # вирус не движется — цикл продолжится (следующий разрез)
             pass
 
     return result
