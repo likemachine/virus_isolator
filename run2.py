@@ -1,5 +1,5 @@
 import sys
-from collections import deque, defaultdict
+from collections import deque
 
 # Вирус всегда стартует из узла 'a' (см. README)
 START_NODE = "a"
@@ -9,15 +9,17 @@ def is_gateway(x: str) -> bool:
     return x.isalpha() and x[0].isupper()
 
 def add_edge(g, u, v):
-    g[u].add(v)
-    g[v].add(u)
+    g.setdefault(u, set()).add(v)
+    g.setdefault(v, set()).add(u)
 
 def remove_edge(g, u, v):
-    if v in g[u]: g[u].remove(v)
-    if u in g[v]: g[v].remove(u)
+    if u in g and v in g[u]:
+        g[u].remove(v)
+    if v in g and u in g[v]:
+        g[v].remove(u)
 
 def parse_edges(lines):
-    g = defaultdict(set)
+    g = {}
     gateways = set()
     normals = set()
 
@@ -36,6 +38,11 @@ def parse_edges(lines):
         else:
             normals.add(v)
     return g, gateways, normals
+
+
+def canonical_graph(g):
+    """Каноническое представление графа для мемоизации."""
+    return tuple(sorted((node, tuple(sorted(neigh))) for node, neigh in g.items()))
 
 def bfs_from(start, g):
     """Обычный BFS c лексикографическим порядком обхода соседей.
@@ -67,37 +74,6 @@ def reconstruct_path(parent, target):
     path.reverse()
     return path  # от старта до target
 
-def lex_min_edge(edges):
-    # edges — итерируемое из ("Gateway","node")
-    return min(edges, key=lambda e: (e[0], e[1]))
-
-def step_choose_cut(g, gateways, virus_pos):
-    """Выбираем ребро для отключения на текущем ходу.
-       1) Если вирус соседствует с каким-либо шлюзом — рубим лекс. минимальное "Шлюз-узел".
-       2) Иначе — выбираем ближайший шлюз (BFS), при равенстве — лекс. мин по имени шлюза,
-          и рубим ребро (Шлюз — его сосед по кратчайшему пути).
-    """
-    # 1) Если рядом есть шлюзы — сразу режем одно из таких ребер
-    adj_gate_edges = [(gw, virus_pos) for gw in g[virus_pos] if is_gateway(gw)]
-    if adj_gate_edges:
-        gw, node = lex_min_edge(adj_gate_edges)
-        return gw, node
-
-    # 2) Иначе — ищем ближайший шлюз
-    dist, parent = bfs_from(virus_pos, g)
-    candidates = [gw for gw in gateways if gw in dist]
-    if not candidates:
-        return None  # путей до шлюзов нет — мы уже выиграли
-
-    # сортировка по (дистанция, имя шлюза)
-    target_gw = min(candidates, key=lambda gw: (dist[gw], gw))
-
-    # путь от вируса до шлюза; его предпоследний узел — сосед шлюза
-    path = reconstruct_path(parent, target_gw)
-    assert len(path) >= 2, "Если шлюз достижим, путь должен иметь хотя бы 2 узла"
-    neighbor_before_gateway = path[-2]
-    return target_gw, neighbor_before_gateway
-
 def step_move_virus(g, gateways, current_pos):
     """Симулируем один ход вируса:
        - он выбирает ближайший шлюз; при равенстве — лекс. мин по имени
@@ -117,39 +93,50 @@ def step_move_virus(g, gateways, current_pos):
     # path: [current_pos, next_node, ..., target_gw]
     return path[1] if len(path) >= 2 else current_pos
 
-def solve(lines):
-    g, gateways, normals = parse_edges(lines)
-    virus_pos = START_NODE
-    out = []
+def virus_can_reach_gateway(g, gateways, virus_pos):
+    dist, _ = bfs_from(virus_pos, g)
+    return any(gw in dist for gw in gateways)
 
-    # Итерируем, пока есть путь от вируса к какому-либо шлюзу
-    while True:
-        dist, _ = bfs_from(virus_pos, g)
-        if not any(gw in dist for gw in gateways):
-            break  # шлюзы недостижимы — готово
+def sorted_gateway_edges(g, gateways):
+    for gw in sorted(gateways):
+        neighbors = g.get(gw)
+        if not neighbors:
+            continue
+        for node in sorted(neighbors):
+            yield gw, node
 
-        cut = step_choose_cut(g, gateways, virus_pos)
-        if cut is None:
-            break  # уже отрезаны
+def find_plan(g, gateways, virus_pos, memo):
+    key = (virus_pos, canonical_graph(g))
+    if key in memo:
+        return memo[key]
 
-        gw, node = cut
-        # фиксируем действие
-        out.append(f"{gw}-{node}")
-        # применяем действие к графу
+    if not virus_can_reach_gateway(g, gateways, virus_pos):
+        memo[key] = []
+        return []
+
+    best = None
+    for gw, node in sorted_gateway_edges(g, gateways):
         remove_edge(g, gw, node)
-
-        # после отключения — ход вируса
         new_pos = step_move_virus(g, gateways, virus_pos)
-
-        # Если вирус «вошел» в шлюз, теоретически это провал; входные гарантии обещают, что такого не будет
-        # Но на всякий случай — прерываем.
-        if is_gateway(new_pos):
-            # Можно выбросить исключение или просто завершить — оставим завершение.
+        if not is_gateway(new_pos):
+            plan_tail = find_plan(g, gateways, new_pos, memo)
+            if plan_tail is not None:
+                best = [f"{gw}-{node}"] + plan_tail
+        add_edge(g, gw, node)
+        if best is not None:
             break
 
-        virus_pos = new_pos
+    memo[key] = best
+    return best
 
-    return out
+def solve(lines):
+    g, gateways, normals = parse_edges(lines)
+    g.setdefault(START_NODE, set())
+    for gw in gateways:
+        g.setdefault(gw, set())
+    memo = {}
+    plan = find_plan(g, gateways, START_NODE, memo)
+    return plan or []
 
 def main():
     data = [line.rstrip("\n") for line in sys.stdin]
