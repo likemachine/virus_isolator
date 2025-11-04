@@ -48,7 +48,7 @@ def test_example4():
     inp = textwrap.dedent("""\
         a-B
     """)
-    assert run(inp) == ""
+    assert run(inp) == "B-a"
 
 def test_example5():
     inp = textwrap.dedent("""\
@@ -56,4 +56,4 @@ def test_example5():
         b-C
         b-D
     """)
-    assert run(inp) == ""
+    assert run(inp).replace("\r\n", "\n") == "C-b\nD-b"
