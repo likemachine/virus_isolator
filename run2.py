@@ -1,5 +1,6 @@
 import sys
 from collections import deque, defaultdict
+from functools import lru_cache
 
 INF = 10**9
 
@@ -29,6 +30,83 @@ def bfs_from_one(start, g):
                 q.append(nb)
     return dist
 
+# ====== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ТОЧНОЙ ПРОВЕРКИ СТРАТЕГИИ ======
+
+def _is_gateway(x: str) -> bool:
+    return bool(x) and x[0].isupper()
+
+def _normalize_gw_edge(u: str, v: str) -> str:
+    # нормализуем ребро, инцидентное шлюзу, в формат "G-p"
+    if _is_gateway(u):
+        return f"{u}-{v}"
+    else:
+        return f"{v}-{u}"
+
+def _can_traverse(u: str, v: str, available_edges: set[str]) -> bool:
+    if _is_gateway(u) or _is_gateway(v):
+        return _normalize_gw_edge(u, v) in available_edges
+    return True
+
+def _virus_is_isolated(virus: str, g: dict[str, set[str]], available_edges: set[str]) -> bool:
+    # BFS с учётом уже отрезанных gateway-рёбер
+    q = deque([virus])
+    seen = {virus}
+    while q:
+        v = q.popleft()
+        for nb in g[v]:
+            if not _can_traverse(v, nb, available_edges):
+                continue
+            if nb not in seen:
+                # если дойдём до шлюза — вирус НЕ изолирован
+                if _is_gateway(nb):
+                    return False
+                seen.add(nb)
+                q.append(nb)
+    # ни один шлюз не достижим
+    return True
+
+def _neighbors_for_state(v: str, g: dict[str, set[str]], available_edges: set[str]) -> list[str]:
+    # возможные ходы вируса (по одному ребру), учитывая уже отрезанные gateway-рёбра
+    res = []
+    for nb in g[v]:
+        if _can_traverse(v, nb, available_edges):
+            res.append(nb)
+    return res
+
+def _defender_has_winning_strategy(virus: str,
+                                   g: dict[str, set[str]],
+                                   gateway_edges: set[str]) -> bool:
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def win(virus_node: str, available_frozen: frozenset) -> bool:
+        available = set(available_frozen)
+
+        if _virus_is_isolated(virus_node, g, available):
+            return True
+
+        moves = _neighbors_for_state(virus_node, g, available)
+        for nb in moves:
+            if _is_gateway(nb):
+                return False
+
+        for nb in moves:
+            found_cut = False
+            for e in available:
+                new_av = set(available)
+                new_av.remove(e)
+                if win(nb, frozenset(new_av)):
+                    found_cut = True
+                    break
+            if not found_cut:
+                return False
+
+        return True
+
+    return win(virus, frozenset(gateway_edges))
+
+# ===================================================================
+
 def solve(edges: list[tuple[str, str]]) -> list[str]:
     # строим граф
     g: dict[str, set[str]] = defaultdict(set)
@@ -52,6 +130,16 @@ def solve(edges: list[tuple[str, str]]) -> list[str]:
     else:
         return []
 
+    # точная проверка существования выигрышной стратегии
+    gateway_edges = set()
+    for G in gateways:
+        for p in g[G]:
+            gateway_edges.add(f"{G}-{p}")  # формат G-p
+
+    if not _defender_has_winning_strategy(virus, g, gateway_edges):
+        # нет победной стратегии → по условию возвращаем пустой список (никаких ходов)
+        return []
+
     result: list[str] = []
 
     while True:
@@ -69,36 +157,30 @@ def solve(edges: list[tuple[str, str]]) -> list[str]:
         # если вирус соседствует со шлюзом — режем это ребро (формат G-virus)
         if best_len == 1:
             cut_candidates = [f"{G}-{virus}" for G in g[virus] if is_gateway(G)]
-            # не пусто по определению, берем лексикографически минимальное
-            cut = min(cut_candidates)
+            cut = min(cut_candidates)  # не пуст по определению
             G, _, p = cut.partition('-')
             if p in g[G]: g[G].remove(p)
             if G in g[p]: g[p].remove(G)
             result.append(cut)
         else:
-            # Соберём ВСЕ допустимые разрывы вида "G-p" которые лежат на кратчайшей дистанции best_len
+            # соберём все допустимые разрывы "G-p" на кратчайшей дистанции
             cut_candidates = []
             for dG, G in reachable:
                 if dG != best_len:
                     break
                 for p in g[G]:
                     if dist_v.get(p, INF) == dG - 1:
-                        # допустимый разрыв: G-p
                         cut_candidates.append((G, p))
 
-            # safety: если вдруг пусто — выходим
             if not cut_candidates:
                 break
 
-            # Для каждого кандидата вычисляем, сколько у p соседей-шлюзов осталось
-            # (эта метрика показывает, насколько опасен узел p)
+            # приоритет узлам-предшественникам с большим числом соседей-шлюзов
             enriched = []
             for G, p in cut_candidates:
                 gw_deg = sum(1 for nb in g[p] if is_gateway(nb))
                 cut_str = f"{G}-{p}"
-                # хотим выбирать сначала по максимальному gw_deg, затем по лексикографическому cut_str
-                enriched.append(( -gw_deg, cut_str, G, p ))  # минус — потому что min/select по ключом
-            # выбираем лучший: минимальный кортеж => максимальный gw_deg и минимальный лексикографически cut_str
+                enriched.append((-gw_deg, cut_str, G, p))  # max gw_deg, затем лексикографический cut_str
             enriched.sort()
             _, cut_str, G, p = enriched[0]
 
@@ -116,9 +198,6 @@ def solve(edges: list[tuple[str, str]]) -> list[str]:
         next_steps = [nb for nb in g[virus] if dist_any_after.get(nb, INF) < dist_any_after.get(virus, INF)]
         if next_steps:
             virus = min(next_steps)
-        else:
-            # вирус не движется — цикл продолжится (следующий разрез)
-            pass
 
     return result
 

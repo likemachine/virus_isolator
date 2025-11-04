@@ -43,3 +43,17 @@ def test_example3():
         g-B
     """)
     assert run(inp).replace("\r\n", "\n") == "A-d\nA-e\nB-f\nB-g"
+
+def test_example4():
+    inp = textwrap.dedent("""\
+        a-B
+    """)
+    assert run(inp) == ""
+
+def test_example5():
+    inp = textwrap.dedent("""\
+        a-b
+        b-C
+        b-D
+    """)
+    assert run(inp) == ""
