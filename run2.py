@@ -44,6 +44,15 @@ def solve(edges: list[tuple[str, str]]) -> list[str]:
     gateways = sorted([v for v in g if is_gateway(v)])
     if not gateways:
         return []
+    
+    # если вирус = шлюз
+    non_gate = [v for v in g if not is_gateway(v)]
+    if non_gate:
+        virus = min(non_gate)
+    else:
+        return []  # все узлы — шлюзы, нечего заражать
+
+    result: list[str] = []
 
     # старт вируса — лексикографически минимальный строчный узел
     virus_candidates = [v for v in g if v and v[0].islower()]
