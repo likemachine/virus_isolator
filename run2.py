@@ -1,102 +1,91 @@
 import sys
 from collections import deque, defaultdict
 
+INF = 10**9
+
+def bfs_from_many(starts, g):
+    dist = {v: INF for v in g}
+    q = deque()
+    for s in starts:
+        if s in g and dist[s] == INF:
+            dist[s] = 0
+            q.append(s)
+    while q:
+        v = q.popleft()
+        for nb in g[v]:
+            if dist[nb] == INF:
+                dist[nb] = dist[v] + 1
+                q.append(nb)
+    return dist
+
+def bfs_from_one(start, g):
+    dist = {start: 0}
+    q = deque([start])
+    while q:
+        v = q.popleft()
+        for nb in g[v]:
+            if nb not in dist:
+                dist[nb] = dist[v] + 1
+                q.append(nb)
+    return dist
+
 def solve(edges: list[tuple[str, str]]) -> list[str]:
-    # строим неориентированный граф
+    # граф
     g: dict[str, set[str]] = defaultdict(set)
     for u, v in edges:
         g[u].add(v)
         g[v].add(u)
 
-    # классификация узлов
-    def is_gateway(x: str) -> bool:
-        return x and x[0].isupper()
+    if not g:
+        return []
 
-    gateways = sorted([n for n in g.keys() if is_gateway(n)])
-    # гарантируется старт вируса в 'a'
-    virus = 'a'
+    is_gateway = lambda x: x and x[0].isupper()
+
+    gateways = sorted([v for v in g if is_gateway(v)])
+    if not gateways:
+        return []
+
+    # старт вируса — лексикографически минимальный строчный узел
+    virus_candidates = [v for v in g if v and v[0].islower()]
+    virus = min(virus_candidates) if virus_candidates else min(g.keys())
 
     result: list[str] = []
 
-    # bfs расстояния от текущей позиции вируса
-    def bfs_dist(start: str) -> dict[str, int]:
-        dist = {start: 0}
-        q = deque([start])
-        while q:
-            cur = q.popleft()
-            for nb in g[cur]:
-                if nb not in dist:
-                    dist[nb] = dist[cur] - 1 if is_gateway(nb) else dist[cur] + 1
-                    dist[nb] = dist[cur] + 1
-                    q.append(nb)
-        return dist
-
-    # выбор целевого шлюза по минимальному расстоянию
-    def choose_target_gateway(dist: dict[str, int]) -> str | None:
-        reachable = [(dist[gx], gx) for gx in gateways if gx in dist]
-        if not reachable:
-            return None
-        reachable.sort()  # по расстоянию, затем лексикографически по имени шлюза
-        return reachable[0][1]
-
-    # шаг вируса к целевому шлюзу
-    def move_virus(v: str, target_gw: str, dist: dict[str, int]) -> str:
-        dist_from_gw = bfs_from_node(target_gw)
-        candidates = []
-        for nb in g[v]:
-            if nb in dist_from_gw and v in dist_from_gw:
-                if dist_from_gw[nb] == dist_from_gw[v] - 1:
-                    candidates.append(nb)
-        if not candidates:
-            return v
-        return sorted(candidates)[0]
-
-    # вспомогательный bfs
-    def bfs_from_node(start: str) -> dict[str, int]:
-        dist = {start: 0}
-        q = deque([start])
-        while q:
-            cur = q.popleft()
-            for nb in g[cur]:
-                if nb not in dist:
-                    dist[nb] = dist[cur] + 1
-                    q.append(nb)
-        return dist
-
     while True:
-        dist = bfs_dist(virus)
-        target = choose_target_gateway(dist)
-        if target is None:
+        # расстояния от вируса
+        dist_v = bfs_from_one(virus, g)
+
+        # ближайшая длина к какому-либо шлюзу
+        reachable = [(dist_v.get(G, INF), G) for G in gateways]
+        reachable.sort()
+        best_len = reachable[0][0]
+        if best_len >= INF:
+            break  # пути к шлюзам нет
+
+        cut_candidates = []
+        for dG, G in reachable:
+            if dG != best_len:
+                break
+            for p in g[G]:
+                if dist_v.get(p, INF) == dG - 1:
+                    cut_candidates.append(f"{G}-{p}")
+
+        cut = min(cut_candidates)
+        G, _, p = cut.partition('-')
+
+        if p in g[G]:
+            g[G].remove(p)
+        if G in g[p]:
+            g[p].remove(G)
+        result.append(cut)
+
+        dist_any = bfs_from_many(gateways, g)
+        if dist_any.get(virus, INF) >= INF:
             break
-        
-        penult = []
-        d_t = dist[target]
-        for nb in g[target]:
-            if nb in dist and dist[nb] == d_t - 1:
-                penult.append(nb)
 
-        cut_node = sorted(penult)[0] if penult else None
-
-        if cut_node is None:
-            break
-
-        result.append(f"{target}-{cut_node}")
-        g[target].discard(cut_node)
-        g[cut_node].discard(target)
-
-        dist_after = bfs_dist(virus)
-        target_after = choose_target_gateway(dist_after)
-        if target_after is None:
-            break
-
-        dist_from_target = bfs_from_node(target_after)
-
-        step_candidates = [nb for nb in g[virus]
-                           if nb in dist_from_target and virus in dist_from_target
-                           and dist_from_target[nb] == dist_from_target[virus] - 1]
-
-        if step_candidates:
-            virus = sorted(step_candidates)[0]
+        next_steps = [nb for nb in g[virus] if dist_any.get(nb, INF) < dist_any.get(virus, INF)]
+        if next_steps:
+            virus = min(next_steps)
         else:
             pass
 
@@ -108,14 +97,11 @@ def main():
     for line in sys.stdin:
         line = line.strip()
         if line:
-            node1, sep, node2 = line.partition('-')
+            a, sep, b = line.partition('-')
             if sep:
-                edges.append((node1, node2))
-
-    result = solve(edges)
-    for edge in result:
-        print(edge)
-
+                edges.append((a, b))
+    for e in solve(edges):
+        print(e)
 
 if __name__ == "__main__":
     main()
